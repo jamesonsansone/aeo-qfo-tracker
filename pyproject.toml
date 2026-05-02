@@ -1,0 +1,19 @@
+[project]
+name = "seo-suite"
+version = "0.1.0"
+description = "Bulk ecommerce query comparison matrix for AI search visibility workflows."
+requires-python = ">=3.10"
+license = "GPL-3.0-only"
+dependencies = [
+  "openai>=1.75.0",
+  "pandas>=2.2.0",
+  "playwright>=1.45.0",
+  "streamlit>=1.32.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

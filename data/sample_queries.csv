@@ -1,0 +1,8 @@
+query,query_cluster,intent,target_url,acceptable_url_pattern,priority
+best trail running shoes for flat feet,trail running shoes,commercial comparison,https://trailgear.example/products/stability-trail-runner,https://trailgear.example/products/*trail*,5
+waterproof hiking shoes for women,hiking shoes,commercial comparison,https://trailgear.example/collections/womens-waterproof-hiking-shoes,https://trailgear.example/collections/*hiking*,5
+lightweight backpacking tent for two,backpacking tents,commercial comparison,https://trailgear.example/products/cloudpeak-2p-tent,https://trailgear.example/products/*tent*,4
+best daypack for commuting and hiking,daypacks,commercial comparison,https://trailgear.example/collections/daypacks,https://trailgear.example/collections/*pack*,3
+warm merino base layer for skiing,base layers,product research,https://trailgear.example/products/merino-thermal-crew,https://trailgear.example/products/*merino*,4
+best trekking poles for knee pain,trekking poles,problem solution,https://trailgear.example/products/carbon-comfort-trekking-poles,https://trailgear.example/products/*trekking-poles*,3
+
