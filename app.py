@@ -248,7 +248,7 @@ def main() -> None:
         target_domain = st.text_input("Target domain", value="trailgear.example")
         provider_name = st.selectbox("Provider", ["Fixture demo", "OpenAI live"])
         runs_count = st.number_input("Runs per query", min_value=1, max_value=10, value=4)
-        model = st.text_input("OpenAI model", value="gpt-5")
+        model = st.selectbox("OpenAI model", ["gpt-5", "gpt-5-nano"])
         fetch_live_pages = st.checkbox("Fetch live page diagnostics", value=False)
         render_live_pages = st.checkbox("Render pages with Playwright", value=False)
         pagespeed_api_key = st.text_input("PageSpeed API key", value="", type="password")
