@@ -11,6 +11,9 @@ htmlcov/
 !.env.example
 outputs/
 data/*.db
+data/*.csv
+!data/sample_queries.csv
+!data/fixture_*.csv
 data/*.sqlite
 data/*.sqlite3
 *.pyc

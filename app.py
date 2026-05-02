@@ -221,8 +221,14 @@ def _style_display_opportunity(df: pd.DataFrame, score_col: str = "opportunity_s
 
 def _comparison_for_query(tables: dict[str, pd.DataFrame], targets, selected_query: str) -> pd.DataFrame:
     target_by_query = {target.query: target for target in targets}
+    if selected_query not in target_by_query:
+        return pd.DataFrame()
+    metrics_by_query = tables["query_metrics"].set_index("query")
+    if selected_query not in metrics_by_query.index:
+        return pd.DataFrame()
+
     target = target_by_query[selected_query]
-    metrics = tables["query_metrics"].set_index("query").loc[selected_query]
+    metrics = metrics_by_query.loc[selected_query]
     urls = [target.target_url]
     competitor = metrics.get("top_competitor_url", "")
     if competitor and competitor != "-":
@@ -256,7 +262,7 @@ def main() -> None:
         db_path = st.text_input("SQLite DB path", value="data/seo_suite.db")
         query_set_name = st.text_input("Query set name", value="Sample Ecommerce Query Set")
         uploaded_file = st.file_uploader("Upload query map CSV", type=["csv"])
-        run_button = st.button("Run Analysis", type="primary", use_container_width=True)
+        run_button = st.button("Run Analysis", type="primary", width="stretch")
 
         st.divider()
         st.caption("Required columns: query, query_cluster, intent, target_url, acceptable_url_pattern. Optional: priority.")
@@ -279,6 +285,7 @@ def main() -> None:
                     render_live_pages,
                     pagespeed_api_key,
                 )
+                st.session_state.targets = targets
                 st.session_state.target_domain = target_domain
                 if save_to_sqlite:
                     st.session_state.last_batch_id = save_run_batch(
@@ -298,6 +305,7 @@ def main() -> None:
             st.stop()
 
     tables = st.session_state.tables
+    active_targets = st.session_state.get("targets", targets)
     active_target = st.session_state.get("target_domain", target_domain)
     brief = generate_brief(tables, active_target)
 
@@ -326,7 +334,7 @@ def main() -> None:
 
     with tab_overview:
         st.subheader("Query Bucket Summary")
-        st.dataframe(_display(tables["overview"]), hide_index=True, use_container_width=True)
+        st.dataframe(_display(tables["overview"]), hide_index=True, width="stretch")
         st.subheader("Highest Opportunity Queries")
         columns = [
             "query",
@@ -342,10 +350,10 @@ def main() -> None:
         st.dataframe(
             _style_display_opportunity(tables["query_metrics"][columns].head(10)),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
         st.subheader("Citation Matrix by Domain")
-        st.dataframe(make_citation_matrix(tables["citations"], "cited_domain"), hide_index=True, use_container_width=True)
+        st.dataframe(make_citation_matrix(tables["citations"], "cited_domain"), hide_index=True, width="stretch")
 
     with tab_matrix:
         st.subheader("Mapped Query Performance")
@@ -369,13 +377,13 @@ def main() -> None:
             "target_mismatch",
             "opportunity_score",
         ]
-        st.dataframe(_style_display_opportunity(tables["query_metrics"][matrix_cols]), hide_index=True, use_container_width=True)
+        st.dataframe(_style_display_opportunity(tables["query_metrics"][matrix_cols]), hide_index=True, width="stretch")
 
     with tab_detail:
         query_options = tables["query_metrics"]["query"].tolist()
         selected_query = st.selectbox("Query", query_options)
         st.subheader("Runs")
-        st.dataframe(_display(tables["runs"][tables["runs"]["query"] == selected_query]), hide_index=True, use_container_width=True)
+        st.dataframe(_display(tables["runs"][tables["runs"]["query"] == selected_query]), hide_index=True, width="stretch")
         st.subheader("Citations")
         detail_cols = [
             "run_index",
@@ -390,7 +398,7 @@ def main() -> None:
         st.dataframe(
             _display(tables["citations"][tables["citations"]["query"] == selected_query][detail_cols]),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
         st.subheader("URL Comparison")
         comparison_cols = [
@@ -412,8 +420,11 @@ def main() -> None:
             "cls",
             "pagespeed_performance_score",
         ]
-        comparison = _comparison_for_query(tables, targets, selected_query)
-        st.dataframe(_display(comparison[[col for col in comparison_cols if col in comparison.columns]]), hide_index=True, use_container_width=True)
+        comparison = _comparison_for_query(tables, active_targets, selected_query)
+        if comparison.empty:
+            st.info("No URL comparison rows are available for this query. Run the analysis again after changing the uploaded query map.")
+        else:
+            st.dataframe(_display(comparison[[col for col in comparison_cols if col in comparison.columns]]), hide_index=True, width="stretch")
         with st.expander("Answer Text"):
             for row in tables["runs"][tables["runs"]["query"] == selected_query].to_dict("records"):
                 st.markdown(f"**Run {row['run_index']}**")
@@ -445,7 +456,7 @@ def main() -> None:
             "field_data_available",
         ]
         diagnostics = tables["page_diagnostics"]
-        st.dataframe(_display(diagnostics[[col for col in diagnostic_cols if col in diagnostics.columns]]), hide_index=True, use_container_width=True)
+        st.dataframe(_display(diagnostics[[col for col in diagnostic_cols if col in diagnostics.columns]]), hide_index=True, width="stretch")
 
     with tab_alignment:
         st.subheader("Content Alignment")
@@ -469,7 +480,7 @@ def main() -> None:
             st.dataframe(
                 _display(alignment[alignment["query"] == selected_alignment_query][alignment_cols]),
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
             )
 
     with tab_daily:
@@ -481,7 +492,7 @@ def main() -> None:
             st.info("No saved SQLite batches yet. Enable 'Save run to SQLite' and run an analysis.")
         else:
             st.line_chart(daily.set_index("run_date")[["mention_rate", "approved_page_citation_rate", "approved_page_rrf_score"]])
-            st.dataframe(_display(daily), hide_index=True, use_container_width=True)
+            st.dataframe(_display(daily), hide_index=True, width="stretch")
 
     with tab_trends:
         st.subheader("8-Week Trends")
@@ -492,7 +503,7 @@ def main() -> None:
             st.info("No weekly rollups available yet.")
         else:
             st.line_chart(weekly.set_index("week_start")[["mention_rate", "approved_page_citation_rate", "approved_page_rrf_score"]])
-            st.dataframe(_display(weekly), hide_index=True, use_container_width=True)
+            st.dataframe(_display(weekly), hide_index=True, width="stretch")
 
     with tab_history:
         st.subheader("Historical Weekly Queue")
@@ -513,7 +524,7 @@ def main() -> None:
             st.dataframe(
                 _style_display_opportunity(historical_queue[[col for col in history_cols if col in historical_queue.columns]], "weekly_priority_score"),
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
             )
 
     with tab_queue:
@@ -532,15 +543,15 @@ def main() -> None:
             "weekly_priority_score",
         ]
         queue = tables["weekly_queue"]
-        st.dataframe(_style_display_opportunity(queue[[col for col in queue_cols if col in queue.columns]], "weekly_priority_score"), hide_index=True, use_container_width=True)
+        st.dataframe(_style_display_opportunity(queue[[col for col in queue_cols if col in queue.columns]], "weekly_priority_score"), hide_index=True, width="stretch")
 
     with tab_competitors:
         st.subheader("Recurring Competitor Domains")
         domain_df = tables["domain_metrics"]
-        st.dataframe(domain_df[domain_df["category"] != "Target"], hide_index=True, use_container_width=True)
+        st.dataframe(domain_df[domain_df["category"] != "Target"], hide_index=True, width="stretch")
         st.subheader("Recurring Competitor URLs")
         url_df = tables["url_metrics"]
-        st.dataframe(url_df[url_df["category"] != "Target"], hide_index=True, use_container_width=True)
+        st.dataframe(url_df[url_df["category"] != "Target"], hide_index=True, width="stretch")
 
     with tab_brief:
         st.subheader("Client-Ready Brief")
@@ -550,7 +561,7 @@ def main() -> None:
             data=_zip_outputs(tables, brief),
             file_name="seo_suite_opportunity_matrix.zip",
             mime="application/zip",
-            use_container_width=True,
+            width="stretch",
         )
 
 
