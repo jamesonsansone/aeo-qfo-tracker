@@ -69,3 +69,31 @@ def test_query_metrics_measure_exact_acceptable_domain_and_mismatch():
     assert bool(metrics.loc["domain only", "target_mismatch"]) is True
     assert metrics.loc["absent", "target_domain_presence_rate"] == 0.0
     assert metrics.loc["absent", "top_competitor_domain"] == "competitor.com"
+
+
+def test_build_tables_preserves_citation_columns_when_no_sources():
+    target = QueryTarget(
+        query="missing citations",
+        query_cluster="cluster",
+        intent="test",
+        target_url="https://example.com/products/a",
+        acceptable_url_pattern="https://example.com/products/*",
+        priority=3,
+    )
+    results = [
+        ProviderResult(
+            query=target.query,
+            run_index=0,
+            provider="fixture",
+            model="fixture",
+            response_text="No sources returned.",
+            sources=[],
+        )
+    ]
+
+    runs = build_query_runs(results, [target], "example.com")
+    tables = build_tables([target], runs, "example.com")
+
+    assert tables["citations"].empty
+    assert "query" in tables["citations"].columns
+    assert tables["query_metrics"].iloc[0]["approved_page_citation_rate"] == 0

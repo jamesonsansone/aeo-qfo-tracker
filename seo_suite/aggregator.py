@@ -52,7 +52,20 @@ def build_query_runs(results: list[ProviderResult], targets: list[QueryTarget], 
 
 def build_tables(targets: list[QueryTarget], runs: list[QueryRun], target_domain: str) -> dict[str, pd.DataFrame]:
     citations = _citation_rows(runs)
-    citations_df = pd.DataFrame(citations)
+    citations_df = pd.DataFrame(
+        citations,
+        columns=[
+            "query",
+            "run_index",
+            "cited_url",
+            "cited_domain",
+            "title",
+            "citation_position",
+            "is_target_domain",
+            "is_exact_target_url",
+            "is_acceptable_target_url",
+        ],
+    )
     runs_df = pd.DataFrame(
         [
             {

@@ -133,7 +133,7 @@ python cli.py run-query-set \
 
 ## Page Diagnostics
 
-Live page diagnostics are optional and cached under `.cache/page_diagnostics` by default.
+Live page diagnostics are optional and cached under `.cache/page_diagnostics` by default. The app intentionally runs search fanout first, then lets you select which target or cited URLs should receive slower page-level checks.
 
 Raw fetch diagnostics use standard HTTP requests. Rendered diagnostics use Playwright when enabled. Playwright is open source and has no per-page API cost, but it requires local browser binaries:
 
@@ -164,6 +164,8 @@ Diagnostics include:
 - external outlink count
 - raw and rendered word counts
 - optional LCP, INP, CLS, and PageSpeed performance score
+
+In the Streamlit app, use **Run Search Fanout** first. Then open **URL Diagnostics**, select the URLs to check, choose raw fetch, Playwright rendering, and PageSpeed options, and run diagnostics separately.
 
 ## Content Alignment
 

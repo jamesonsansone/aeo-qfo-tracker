@@ -13,6 +13,7 @@ from seo_suite.aggregator import build_query_runs, build_tables, make_citation_m
 from seo_suite.content_alignment import build_content_alignment
 from seo_suite.io import load_query_targets
 from seo_suite.matching import normalize_url
+from seo_suite.models import ProviderResult
 from seo_suite.page_diagnostics import (
     build_page_diagnostics,
     build_weekly_queue,
@@ -133,9 +134,6 @@ def _run_analysis(
     provider_name: str,
     runs_count: int,
     model: str,
-    fetch_live_pages: bool,
-    render_live_pages: bool,
-    pagespeed_api_key: str,
 ) -> dict[str, pd.DataFrame]:
     if provider_name == "Fixture demo":
         if len(targets) == len(load_query_targets(SAMPLE_QUERIES)) and all(
@@ -148,22 +146,38 @@ def _run_analysis(
 
     provider_results = []
     progress = st.progress(0, text="Starting analysis...")
+    status = st.empty()
     total = len(targets) * runs_count
     completed = 0
+    errors = []
     for target in targets:
         for run_index in range(runs_count):
-            provider_results.append(provider.run_query(target, run_index))
+            status.info(f"Running query {completed + 1} of {total}: {target.query} (run {run_index + 1})")
+            try:
+                provider_results.append(provider.run_query(target, run_index))
+            except Exception as exc:
+                message = f"{target.query} run {run_index + 1}: {exc.__class__.__name__}: {exc}"
+                errors.append(message)
+                provider_results.append(
+                    ProviderResult(
+                        query=target.query,
+                        run_index=run_index,
+                        provider=provider_name,
+                        model=model,
+                        response_text=f"Run failed: {message}",
+                        sources=[],
+                    )
+                )
             completed += 1
             progress.progress(completed / total, text=f"Completed {completed} of {total} runs")
     progress.empty()
+    status.empty()
     runs = build_query_runs(provider_results, targets, target_domain)
     tables = build_tables(targets, runs, target_domain)
     tables["page_diagnostics"] = build_page_diagnostics(
         collect_diagnostic_urls(targets, tables),
         fixture_path=PAGE_FIXTURES,
-        fetch_live=fetch_live_pages,
-        render_live=render_live_pages,
-        pagespeed_api_key=pagespeed_api_key or None,
+        fetch_live=False,
     )
     tables["content_alignment"] = build_content_alignment(
         targets,
@@ -171,7 +185,76 @@ def _run_analysis(
         fixture_path=PAGE_FIXTURES,
     )
     tables["weekly_queue"] = build_weekly_queue(targets, tables)
+    tables["run_errors"] = pd.DataFrame({"error": errors})
     return tables
+
+
+def _append_log(message: str) -> None:
+    st.session_state.setdefault("run_log", [])
+    st.session_state.run_log.append(message)
+
+
+def _merge_diagnostics(existing: pd.DataFrame, updates: pd.DataFrame) -> pd.DataFrame:
+    if existing.empty:
+        return updates
+    if updates.empty:
+        return existing
+    merged = pd.concat([existing, updates], ignore_index=True)
+    merged["_normalized"] = merged["url"].apply(normalize_url)
+    merged = merged.drop_duplicates("_normalized", keep="last").drop(columns=["_normalized"])
+    return merged.reset_index(drop=True)
+
+
+def _run_selected_diagnostics(
+    tables: dict[str, pd.DataFrame],
+    targets,
+    selected_urls: list[str],
+    fetch_live_pages: bool,
+    render_live_pages: bool,
+    pagespeed_api_key: str,
+) -> dict[str, pd.DataFrame]:
+    if not selected_urls:
+        st.warning("Select at least one URL to diagnose.")
+        return tables
+
+    updated_tables = dict(tables)
+    progress = st.progress(0, text="Starting URL diagnostics...")
+    status = st.empty()
+    rows = []
+    errors = []
+    total = len(selected_urls)
+    for index, url in enumerate(selected_urls, start=1):
+        status.info(f"Checking URL {index} of {total}: {url}")
+        try:
+            diagnostics = build_page_diagnostics(
+                [url],
+                fixture_path=PAGE_FIXTURES,
+                fetch_live=fetch_live_pages,
+                render_live=render_live_pages,
+                pagespeed_api_key=pagespeed_api_key or None,
+            )
+            rows.append(diagnostics)
+            row = diagnostics.iloc[0].to_dict() if not diagnostics.empty else {}
+            _append_log(f"URL diagnostics completed for {url}: {row.get('fetch_status', 'unknown')}")
+        except Exception as exc:
+            message = f"{url}: {exc.__class__.__name__}: {exc}"
+            errors.append(message)
+            _append_log(f"URL diagnostics failed for {message}")
+        progress.progress(index / total, text=f"Completed {index} of {total} URLs")
+
+    progress.empty()
+    status.empty()
+
+    if rows:
+        updated = pd.concat(rows, ignore_index=True)
+        updated_tables["page_diagnostics"] = _merge_diagnostics(updated_tables.get("page_diagnostics", pd.DataFrame()), updated)
+        updated_tables["content_alignment"] = build_content_alignment(targets, updated_tables, fixture_path=PAGE_FIXTURES)
+        updated_tables["weekly_queue"] = build_weekly_queue(targets, updated_tables)
+    if errors:
+        existing_errors = updated_tables.get("diagnostic_errors", pd.DataFrame())
+        new_errors = pd.DataFrame({"error": errors})
+        updated_tables["diagnostic_errors"] = pd.concat([existing_errors, new_errors], ignore_index=True)
+    return updated_tables
 
 
 def _zip_outputs(tables: dict[str, pd.DataFrame], brief: str) -> bytes:
@@ -255,14 +338,12 @@ def main() -> None:
         provider_name = st.selectbox("Provider", ["Fixture demo", "OpenAI live"])
         runs_count = st.number_input("Runs per query", min_value=1, max_value=10, value=4)
         model = st.selectbox("OpenAI model", ["gpt-5", "gpt-5-nano"])
-        fetch_live_pages = st.checkbox("Fetch live page diagnostics", value=False)
-        render_live_pages = st.checkbox("Render pages with Playwright", value=False)
         pagespeed_api_key = st.text_input("PageSpeed API key", value="", type="password")
         save_to_sqlite = st.checkbox("Save run to SQLite", value=False)
         db_path = st.text_input("SQLite DB path", value="data/seo_suite.db")
         query_set_name = st.text_input("Query set name", value="Sample Ecommerce Query Set")
         uploaded_file = st.file_uploader("Upload query map CSV", type=["csv"])
-        run_button = st.button("Run Analysis", type="primary", width="stretch")
+        run_button = st.button("Run Search Fanout", type="primary", width="stretch")
 
         st.divider()
         st.caption("Required columns: query, query_cluster, intent, target_url, acceptable_url_pattern. Optional: priority.")
@@ -281,12 +362,10 @@ def main() -> None:
                     provider_name,
                     int(runs_count),
                     model,
-                    fetch_live_pages,
-                    render_live_pages,
-                    pagespeed_api_key,
                 )
                 st.session_state.targets = targets
                 st.session_state.target_domain = target_domain
+                _append_log(f"Search fanout completed for {len(targets)} queries and {int(runs_count)} runs per query.")
                 if save_to_sqlite:
                     st.session_state.last_batch_id = save_run_batch(
                         db_path,
@@ -301,6 +380,7 @@ def main() -> None:
                     st.session_state.db_path = db_path
                     st.session_state.query_set_name = query_set_name
         except Exception as exc:
+            _append_log(f"Analysis failed: {exc.__class__.__name__}: {exc}")
             st.error(f"Analysis failed: {exc}")
             st.stop()
 
@@ -432,6 +512,37 @@ def main() -> None:
 
     with tab_diagnostics:
         st.subheader("URL Diagnostics")
+        st.caption("Run page diagnostics after search fanout. Select only the target and cited URLs you want to fetch, render, and analyze.")
+        diagnostic_candidates = collect_diagnostic_urls(active_targets, tables)
+        default_urls = []
+        metrics = tables.get("query_metrics", pd.DataFrame())
+        if not metrics.empty:
+            default_urls = (
+                metrics["target_url"].dropna().astype(str).head(3).tolist()
+                + metrics["top_competitor_url"].dropna().astype(str).replace("-", "").head(3).tolist()
+            )
+        selected_diagnostic_urls = st.multiselect(
+            "URLs to diagnose",
+            diagnostic_candidates,
+            default=[url for url in default_urls if url in diagnostic_candidates],
+        )
+        diagnostic_cols = st.columns(3)
+        fetch_live_diagnostics = diagnostic_cols[0].checkbox("Fetch raw HTML", value=True)
+        render_live_diagnostics = diagnostic_cols[1].checkbox("Render with Playwright", value=False)
+        include_pagespeed = diagnostic_cols[2].checkbox("Fetch PageSpeed metrics", value=False)
+        run_diagnostics = st.button("Run URL Diagnostics", type="secondary")
+        if run_diagnostics:
+            st.session_state.tables = _run_selected_diagnostics(
+                tables,
+                active_targets,
+                selected_diagnostic_urls,
+                fetch_live_pages=fetch_live_diagnostics,
+                render_live_pages=render_live_diagnostics,
+                pagespeed_api_key=pagespeed_api_key if include_pagespeed else "",
+            )
+            tables = st.session_state.tables
+            brief = generate_brief(tables, active_target)
+
         diagnostic_cols = [
             "url",
             "domain",
@@ -457,6 +568,10 @@ def main() -> None:
         ]
         diagnostics = tables["page_diagnostics"]
         st.dataframe(_display(diagnostics[[col for col in diagnostic_cols if col in diagnostics.columns]]), hide_index=True, width="stretch")
+        diagnostic_errors = tables.get("diagnostic_errors", pd.DataFrame())
+        if not diagnostic_errors.empty:
+            with st.expander("Diagnostic Errors"):
+                st.dataframe(diagnostic_errors, hide_index=True, width="stretch")
 
     with tab_alignment:
         st.subheader("Content Alignment")
@@ -563,6 +678,19 @@ def main() -> None:
             mime="application/zip",
             width="stretch",
         )
+
+    with st.sidebar:
+        with st.expander("Run Log", expanded=False):
+            log_rows = st.session_state.get("run_log", [])
+            if log_rows:
+                for item in log_rows[-25:]:
+                    st.write(item)
+            else:
+                st.caption("No run events yet.")
+        run_errors = tables.get("run_errors", pd.DataFrame())
+        if not run_errors.empty:
+            with st.expander("Search Run Errors", expanded=True):
+                st.dataframe(run_errors, hide_index=True, width="stretch")
 
 
 if __name__ == "__main__":
