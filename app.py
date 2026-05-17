@@ -85,7 +85,7 @@ DISPLAY_LABELS = {
 
 
 st.set_page_config(
-    page_title="SEO Suite: Query Fan-Out",
+    page_title="Botify Consulting | AEO Query Fan-out Tracker",
     page_icon="",
     layout="wide",
 )
@@ -115,20 +115,20 @@ def _check_environment() -> None:
 def main() -> None:
     _check_environment()
     with st.sidebar:
-        st.title("SEO Suite")
-        st.caption("Fast AI-search fan-out visibility for ecommerce queries.")
+        st.title("Botify Consulting | AEO Query Fan-out Tracker")
+        st.caption("AI-search fan-out visibility for ecommerce queries.")
 
         workflow = st.radio("Workflow", ["One-off query", "CSV batch"], horizontal=True)
         domain_label = "Target domain" if workflow == "One-off query" else "Default target domain"
         default_target_domain = st.text_input(
             domain_label,
-            value="trailgear.example",
+            value="us.puma.com",
             help="Domain-only matching is enough. Any cited URL on this domain or its subdomains is flagged as a target citation.",
             placeholder="us.puma.com",
         )
         default_brand_aliases = st.text_input(
             "Target brand aliases",
-            value="TrailGear",
+            value="Puma, Puma Running",
             help="Comma-separated names to count in answer text. Example: Puma, Puma Running.",
         )
         brand_alias_file = st.file_uploader(
@@ -155,7 +155,7 @@ def main() -> None:
         if workflow == "One-off query":
             query_text = st.text_area(
                 "Query",
-                value="best trail running shoes for rocky terrain",
+                value="best running shoes for speed training",
                 height=90,
             )
         else:
@@ -186,7 +186,7 @@ def main() -> None:
             st.caption(f"google-genai: `{diagnostics['google_genai_version']}`")
             st.caption(f"Streamlit: `{diagnostics['streamlit_version']}`")
 
-    st.title("AI Search Query Fan-Out")
+    st.title("Botify Consulting | AEO Query Fan-out Tracker")
     st.caption("Run one query or a category batch, then inspect citations, fanout queries, answers, and brand mention coverage.")
 
     try:
