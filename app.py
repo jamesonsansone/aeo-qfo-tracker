@@ -1,696 +1,661 @@
-"""Streamlit app for the SEO Suite AI Search Query Opportunity Matrix."""
+"""Streamlit app for fast AI search query fan-out analysis."""
 
 from __future__ import annotations
 
 import io
+import importlib.metadata
 import zipfile
+from datetime import datetime
 from pathlib import Path
+import sys
 
 import pandas as pd
 import streamlit as st
 
-from seo_suite.aggregator import build_query_runs, build_tables, make_citation_matrix
-from seo_suite.content_alignment import build_content_alignment
-from seo_suite.io import load_query_targets
-from seo_suite.matching import normalize_url
-from seo_suite.models import ProviderResult
-from seo_suite.page_diagnostics import (
-    build_page_diagnostics,
-    build_weekly_queue,
-    collect_diagnostic_urls,
-)
-from seo_suite.providers import FixtureProvider, OpenAIWebSearchProvider
-from seo_suite.reporting import generate_brief
-from seo_suite.storage import (
-    build_daily_trends,
-    build_historical_queue,
-    build_weekly_rollups,
-    save_run_batch,
-)
+from seo_suite.aggregator import build_query_runs, build_tables
+from seo_suite.io import query_targets_from_dataframe, _canonical_column_key
+from seo_suite.providers import FixtureProvider, GeminiGroundedSearchProvider, OpenAIWebSearchProvider
+from seo_suite.runner import run_queries
 
 
-SAMPLE_QUERIES = "data/sample_queries.csv"
 FIXTURE_RUNS = "data/fixture_raw_runs.jsonl"
-PAGE_FIXTURES = "data/fixture_pages.jsonl"
 
 
 DISPLAY_LABELS = {
-    "citation_count": "Source URLs Cited",
-    "acceptable_url_pattern": "Approved Page Pattern",
-    "acceptable_target_presence_rate": "Approved Page Visibility",
-    "acceptable_mrr": "Approved Page RRF Score (Reciprocal Rank Fusion)",
-    "avg_acceptable_presence_rate": "Avg Approved Page Visibility",
-    "avg_acceptable_mrr": "Avg Approved Page RRF Score (Reciprocal Rank Fusion)",
-    "target_mention_rate": "Mention Rate",
+    "target_domain": "Target Domain",
+    "target_url": "Target URL",
+    "acceptable_url_pattern": "Target URL Pattern",
+    "target_brand_aliases": "Target Brand Aliases",
+    "query_cluster": "Query Cluster",
+    "run_index": "Run",
+    "provider": "Provider",
+    "model": "Model",
+    "response_text": "AI Answer",
+    "citation_count": "URLs Cited",
+    "fanout_query_count": "Fan-Out Queries",
+    "mentioned_brands": "Mentioned Brands",
+    "brand": "Brand",
+    "matched_alias": "Matched Alias",
+    "evidence": "Evidence",
+    "position": "Position",
+    "evidence_runs": "Evidence Runs",
+    "seed_sources": "Seed Sources",
+    "category": "Category",
+    "fanout_position": "Fan-Out Position",
+    "fanout_query": "Fan-Out Query",
+    "cited_url": "Cited URL",
+    "cited_domain": "Cited Domain",
+    "original_url": "Original URL",
+    "resolved_url": "Resolved URL",
+    "resolution_status": "Resolution Status",
+    "resolution_method": "Resolution Method",
+    "final_status_code": "Final Status",
+    "final_domain": "Final Domain",
+    "resolution_error": "Resolution Error",
+    "source_label": "Source Label",
+    "fallback_domain": "Fallback Domain",
+    "citation_kind": "Citation Kind",
+    "source_type": "Source Type",
+    "citation_kinds": "Citation Kinds",
+    "citation_position": "Citation Position",
+    "is_target_domain": "Target Domain",
+    "is_exact_target_url": "Exact Target URL",
+    "is_acceptable_target_url": "Matches URL Pattern",
+    "total_citations": "Total Citations",
+    "unique_cited_urls": "Unique Cited URLs",
+    "unresolved_redirects": "Unresolved Redirects",
+    "domain_fallback_citations": "Domain Fallback Citations",
+    "queries_count": "Queries",
+    "query_coverage": "Query Coverage",
+    "query_coverage_rate": "Query Coverage %",
+    "answer_frequency": "Answer Frequency",
+    "answer_frequency_rate": "Answer Frequency %",
+    "is_target_brand": "Target Brand",
     "domain_citation_rate": "Domain Citation Rate",
-    "exact_url_citation_rate": "Exact URL Citation Rate",
-    "approved_page_citation_rate": "Approved Page Citation Rate",
-    "target_mismatch": "Wrong Client Page Cited",
-    "target_mismatch_queries": "Wrong-Page Queries",
-    "exact_target_url_presence_rate": "Exact URL Visibility",
-    "target_domain_presence_rate": "Domain Visibility",
-    "best_acceptable_position": "Best Approved Page Position",
-    "is_acceptable_target_url": "Approved Page Match",
-    "is_exact_target_url": "Exact URL Match",
-    "is_target_domain": "Target Domain Match",
-    "raw_html_available": "Raw HTML Available",
-    "rendered_html_available": "Rendered HTML Available",
-    "product_schema_raw": "Product Schema in Raw HTML",
-    "product_schema_rendered": "Product Schema After Rendering",
-    "offer_schema_raw": "Offer Schema in Raw HTML",
-    "offer_schema_rendered": "Offer Schema After Rendering",
-    "raw_render_delta_type": "Raw vs Rendered Difference",
-    "title_changed": "Title Changed After Rendering",
-    "h1_changed": "H1 Changed After Rendering",
-    "canonical_changed": "Canonical Changed After Rendering",
-    "internal_links_count": "Internal Links",
-    "external_outlinks_count": "External Outlinks",
-    "word_count_raw": "Raw Word Count",
-    "word_count_rendered": "Rendered Word Count",
-    "pagespeed_performance_score": "PageSpeed Performance Score",
-    "field_data_available": "Field Data Available",
-    "diagnostic_flags": "Diagnostic Flags",
-    "recommended_follow_up": "Recommended Follow-Up",
-    "approved_page_visibility": "Approved Page Visibility",
-    "approved_page_position_score": "Approved Page RRF Score (Reciprocal Rank Fusion)",
-    "wrong_client_page_cited": "Wrong Client Page Cited",
-    "weekly_priority_score": "Weekly Priority Score",
-    "url_role": "URL Role",
-    "tfidf_score": "TF-IDF Alignment Score",
-    "embedding_score": "Embedding Score",
-    "best_matching_heading": "Best Matching Section",
-    "best_chunk_text": "Best Matching Text",
-    "answer_capsule_present": "Answer Capsule Present",
-    "alignment_gap_vs_top_competitor": "Alignment Gap vs Top Competitor",
-    "source_text_mode": "Source Text Mode",
-    "issue_status": "Issue Status",
-    "run_date": "Run Date",
+    "inline_citation_rate": "Inline Citation Rate",
+    "target_mention_rate": "Mention Rate",
+    "approved_page_citation_rate": "URL Pattern Citation Rate",
+    "domain_rrf_score": "Domain RRF Score",
+    "acceptable_rrf_score": "URL Pattern RRF Score",
+    "top_competitor_domain": "Top Competitor Domain",
+    "top_competitor_url": "Top Competitor URL",
+    "top_brands": "Top Brands",
+    "opportunity_score": "Opportunity Score",
 }
 
 
 st.set_page_config(
-    page_title="SEO Suite: AI Opportunity Matrix",
+    page_title="SEO Suite: Query Fan-Out",
     page_icon="",
     layout="wide",
 )
 
 
-def _load_targets(uploaded_file) -> tuple[list, pd.DataFrame]:
-    if uploaded_file is None:
-        targets = load_query_targets(SAMPLE_QUERIES)
-        df = pd.read_csv(SAMPLE_QUERIES)
-        return targets, df
-    df = pd.read_csv(uploaded_file).fillna("")
-    temp = Path("outputs/_uploaded_queries.csv")
-    temp.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(temp, index=False)
-    return load_query_targets(temp), df
+def _check_environment() -> None:
+    """Warn immediately if the active Python has an openai version too old for this app."""
+    try:
+        raw = importlib.metadata.version("openai")
+        parts = tuple(int(x) for x in raw.split(".")[:2] if x.isdigit())
+        openai_ok = parts >= (1, 52)
+    except Exception:
+        raw = "not installed"
+        openai_ok = False
 
-
-@st.cache_data(show_spinner=False)
-def _run_fixture(target_domain: str, runs_count: int) -> dict[str, pd.DataFrame]:
-    targets = load_query_targets(SAMPLE_QUERIES)
-    provider = FixtureProvider(FIXTURE_RUNS)
-    provider_results = [
-        provider.run_query(target, run_index)
-        for target in targets
-        for run_index in range(runs_count)
-    ]
-    runs = build_query_runs(provider_results, targets, target_domain)
-    tables = build_tables(targets, runs, target_domain)
-    tables["page_diagnostics"] = build_page_diagnostics(
-        collect_diagnostic_urls(targets, tables),
-        fixture_path=PAGE_FIXTURES,
-        fetch_live=False,
-    )
-    tables["content_alignment"] = build_content_alignment(targets, tables, fixture_path=PAGE_FIXTURES)
-    tables["weekly_queue"] = build_weekly_queue(targets, tables)
-    return tables
-
-
-def _run_analysis(
-    targets,
-    target_domain: str,
-    provider_name: str,
-    runs_count: int,
-    model: str,
-) -> dict[str, pd.DataFrame]:
-    if provider_name == "Fixture demo":
-        if len(targets) == len(load_query_targets(SAMPLE_QUERIES)) and all(
-            target.query == sample.query for target, sample in zip(targets, load_query_targets(SAMPLE_QUERIES))
-        ):
-            return _run_fixture(target_domain, runs_count)
-        provider = FixtureProvider(FIXTURE_RUNS)
-    else:
-        provider = OpenAIWebSearchProvider(model=model)
-
-    provider_results = []
-    progress = st.progress(0, text="Starting analysis...")
-    status = st.empty()
-    total = len(targets) * runs_count
-    completed = 0
-    errors = []
-    for target in targets:
-        for run_index in range(runs_count):
-            status.info(f"Running query {completed + 1} of {total}: {target.query} (run {run_index + 1})")
-            try:
-                provider_results.append(provider.run_query(target, run_index))
-            except Exception as exc:
-                message = f"{target.query} run {run_index + 1}: {exc.__class__.__name__}: {exc}"
-                errors.append(message)
-                provider_results.append(
-                    ProviderResult(
-                        query=target.query,
-                        run_index=run_index,
-                        provider=provider_name,
-                        model=model,
-                        response_text=f"Run failed: {message}",
-                        sources=[],
-                    )
-                )
-            completed += 1
-            progress.progress(completed / total, text=f"Completed {completed} of {total} runs")
-    progress.empty()
-    status.empty()
-    runs = build_query_runs(provider_results, targets, target_domain)
-    tables = build_tables(targets, runs, target_domain)
-    tables["page_diagnostics"] = build_page_diagnostics(
-        collect_diagnostic_urls(targets, tables),
-        fixture_path=PAGE_FIXTURES,
-        fetch_live=False,
-    )
-    tables["content_alignment"] = build_content_alignment(
-        targets,
-        tables,
-        fixture_path=PAGE_FIXTURES,
-    )
-    tables["weekly_queue"] = build_weekly_queue(targets, tables)
-    tables["run_errors"] = pd.DataFrame({"error": errors})
-    return tables
-
-
-def _append_log(message: str) -> None:
-    st.session_state.setdefault("run_log", [])
-    st.session_state.run_log.append(message)
-
-
-def _merge_diagnostics(existing: pd.DataFrame, updates: pd.DataFrame) -> pd.DataFrame:
-    if existing.empty:
-        return updates
-    if updates.empty:
-        return existing
-    merged = pd.concat([existing, updates], ignore_index=True)
-    merged["_normalized"] = merged["url"].apply(normalize_url)
-    merged = merged.drop_duplicates("_normalized", keep="last").drop(columns=["_normalized"])
-    return merged.reset_index(drop=True)
-
-
-def _run_selected_diagnostics(
-    tables: dict[str, pd.DataFrame],
-    targets,
-    selected_urls: list[str],
-    fetch_live_pages: bool,
-    render_live_pages: bool,
-    pagespeed_api_key: str,
-) -> dict[str, pd.DataFrame]:
-    if not selected_urls:
-        st.warning("Select at least one URL to diagnose.")
-        return tables
-
-    updated_tables = dict(tables)
-    progress = st.progress(0, text="Starting URL diagnostics...")
-    status = st.empty()
-    rows = []
-    errors = []
-    total = len(selected_urls)
-    for index, url in enumerate(selected_urls, start=1):
-        status.info(f"Checking URL {index} of {total}: {url}")
-        try:
-            diagnostics = build_page_diagnostics(
-                [url],
-                fixture_path=PAGE_FIXTURES,
-                fetch_live=fetch_live_pages,
-                render_live=render_live_pages,
-                pagespeed_api_key=pagespeed_api_key or None,
-            )
-            rows.append(diagnostics)
-            row = diagnostics.iloc[0].to_dict() if not diagnostics.empty else {}
-            _append_log(f"URL diagnostics completed for {url}: {row.get('fetch_status', 'unknown')}")
-        except Exception as exc:
-            message = f"{url}: {exc.__class__.__name__}: {exc}"
-            errors.append(message)
-            _append_log(f"URL diagnostics failed for {message}")
-        progress.progress(index / total, text=f"Completed {index} of {total} URLs")
-
-    progress.empty()
-    status.empty()
-
-    if rows:
-        updated = pd.concat(rows, ignore_index=True)
-        updated_tables["page_diagnostics"] = _merge_diagnostics(updated_tables.get("page_diagnostics", pd.DataFrame()), updated)
-        updated_tables["content_alignment"] = build_content_alignment(targets, updated_tables, fixture_path=PAGE_FIXTURES)
-        updated_tables["weekly_queue"] = build_weekly_queue(targets, updated_tables)
-    if errors:
-        existing_errors = updated_tables.get("diagnostic_errors", pd.DataFrame())
-        new_errors = pd.DataFrame({"error": errors})
-        updated_tables["diagnostic_errors"] = pd.concat([existing_errors, new_errors], ignore_index=True)
-    return updated_tables
-
-
-def _zip_outputs(tables: dict[str, pd.DataFrame], brief: str) -> bytes:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for name, df in tables.items():
-            zf.writestr(f"{name}.csv", df.to_csv(index=False))
-        zf.writestr("client_brief.md", brief)
-    return buffer.getvalue()
-
-
-def _metric_value(tables: dict[str, pd.DataFrame], key: str, default="-"):
-    overview = tables.get("overview", pd.DataFrame())
-    if overview.empty or key not in overview.columns:
-        return default
-    return overview.iloc[0][key]
-
-
-def _style_opportunity(df: pd.DataFrame, score_col: str = "opportunity_score"):
-    def color_score(value):
-        try:
-            score = float(value)
-        except (TypeError, ValueError):
-            return ""
-        if score >= 75:
-            return "background-color: #f8d7da; color: #721c24"
-        if score >= 50:
-            return "background-color: #fff3cd; color: #6c4a00"
-        return "background-color: #d4edda; color: #155724"
-
-    return df.style.map(color_score, subset=[score_col])
-
-
-def _display(df: pd.DataFrame) -> pd.DataFrame:
-    display_df = df.copy()
-    for column in ["best_exact_position", "best_acceptable_position", "best_domain_position"]:
-        if column in display_df.columns:
-            display_df[column] = display_df[column].fillna("-").astype(str)
-    return display_df.rename(columns=DISPLAY_LABELS)
-
-
-def _style_display_opportunity(df: pd.DataFrame, score_col: str = "opportunity_score"):
-    display_df = _display(df)
-    display_score = DISPLAY_LABELS.get(score_col, score_col)
-    return _style_opportunity(display_df, display_score)
-
-
-def _comparison_for_query(tables: dict[str, pd.DataFrame], targets, selected_query: str) -> pd.DataFrame:
-    target_by_query = {target.query: target for target in targets}
-    if selected_query not in target_by_query:
-        return pd.DataFrame()
-    metrics_by_query = tables["query_metrics"].set_index("query")
-    if selected_query not in metrics_by_query.index:
-        return pd.DataFrame()
-
-    target = target_by_query[selected_query]
-    metrics = metrics_by_query.loc[selected_query]
-    urls = [target.target_url]
-    competitor = metrics.get("top_competitor_url", "")
-    if competitor and competitor != "-":
-        urls.append(competitor)
-    cited = tables["citations"][tables["citations"]["query"] == selected_query]
-    competitor_urls = cited.loc[~cited["is_target_domain"], "cited_url"].drop_duplicates().head(3).tolist()
-    urls.extend(url for url in competitor_urls if url not in urls)
-    diagnostics = tables["page_diagnostics"].copy()
-    diagnostics["_normalized"] = diagnostics["url"].apply(normalize_url)
-    comparison = diagnostics[diagnostics["_normalized"].isin({normalize_url(url) for url in urls})].drop(columns=["_normalized"])
-    comparison.insert(
-        0,
-        "url_role",
-        comparison["url"].apply(lambda url: "Mapped Target URL" if normalize_url(url) == normalize_url(target.target_url) else "Cited Competitor URL"),
-    )
-    return comparison
+    if not openai_ok:
+        st.error(
+            f"**Environment mismatch.** openai {raw} is installed under `{sys.executable}` "
+            f"(Python {sys.version.split()[0]}), but this app requires openai ≥ 1.52.0.\n\n"
+            "The openai/httpx incompatibility will cause every OpenAI run to fail.\n\n"
+            "**Fix:** launch the app with the project venv:\n"
+            "```\npython -m streamlit run app.py\n```"
+        )
+        st.stop()
 
 
 def main() -> None:
+    _check_environment()
     with st.sidebar:
-        st.title("AI Opportunity Matrix")
-        st.caption("Grounded AI-search visibility testing for mapped SEO query sets.")
-        target_domain = st.text_input("Target domain", value="trailgear.example")
-        provider_name = st.selectbox("Provider", ["Fixture demo", "OpenAI live"])
-        runs_count = st.number_input("Runs per query", min_value=1, max_value=10, value=4)
-        model = st.selectbox("OpenAI model", ["gpt-5", "gpt-5-nano"])
-        pagespeed_api_key = st.text_input("PageSpeed API key", value="", type="password")
-        save_to_sqlite = st.checkbox("Save run to SQLite", value=False)
-        db_path = st.text_input("SQLite DB path", value="data/seo_suite.db")
-        query_set_name = st.text_input("Query set name", value="Sample Ecommerce Query Set")
-        uploaded_file = st.file_uploader("Upload query map CSV", type=["csv"])
-        run_button = st.button("Run Search Fanout", type="primary", width="stretch")
+        st.title("SEO Suite")
+        st.caption("Fast AI-search fan-out visibility for ecommerce queries.")
 
-        st.divider()
-        st.caption("Required columns: query, query_cluster, intent, target_url, acceptable_url_pattern. Optional: priority.")
+        workflow = st.radio("Workflow", ["One-off query", "CSV batch"], horizontal=True)
+        domain_label = "Target domain" if workflow == "One-off query" else "Default target domain"
+        default_target_domain = st.text_input(
+            domain_label,
+            value="trailgear.example",
+            help="Domain-only matching is enough. Any cited URL on this domain or its subdomains is flagged as a target citation.",
+            placeholder="us.puma.com",
+        )
+        default_brand_aliases = st.text_input(
+            "Target brand aliases",
+            value="TrailGear",
+            help="Comma-separated names to count in answer text. Example: Puma, Puma Running.",
+        )
+        brand_alias_file = st.file_uploader(
+            "Brand aliases CSV",
+            type=["csv"],
+            key="brand_aliases_csv",
+            help="Optional extension list with columns `brand`, `aliases`, and optional `category`.",
+        )
+        with st.expander("Optional URL matching", expanded=False):
+            default_target_url = st.text_input(
+                "Exact target URL",
+                value="",
+                help="Optional. Use only if you care whether one exact URL is cited.",
+            )
+            default_url_pattern = st.text_input(
+                "Target URL pattern",
+                value="",
+                help="Optional glob or regex. Example: https://us.puma.com/us/en/mens/*",
+            )
+            st.caption("Leave these blank for domain-only analysis. A cited URL like `https://us.puma.com/us/en/mens/clothing` will match target domain `us.puma.com`.")
 
-    st.title("SEO Suite: AI Search Query Opportunity Matrix")
-    st.caption("Map queries to target URLs, run grounded tests, and see where the client wins, loses, or shows the wrong page.")
+        query_text = ""
+        uploaded_file = None
+        if workflow == "One-off query":
+            query_text = st.text_area(
+                "Query",
+                value="best trail running shoes for rocky terrain",
+                height=90,
+            )
+        else:
+            uploaded_file = st.file_uploader("Upload query CSV", type=["csv"])
+            st.caption("CSV requires `Query` or `query`; optional columns include `Type`, `Strategic Category`, `Domain`, `Target URL`, `URL Pattern`, `Cluster`, `Intent`, and `Priority`.")
 
-    targets, input_df = _load_targets(uploaded_file)
+        provider_name = st.selectbox("Provider", ["Fixture demo", "Gemini live", "OpenAI live"])
+        if provider_name == "Gemini live":
+            model = st.selectbox("Gemini model", ["gemini-3.1-flash-lite"])
+            api_key = st.text_input("Gemini API key", value="", type="password")
+        elif provider_name == "OpenAI live":
+            model = st.selectbox("OpenAI model", ["gpt-5", "gpt-5-mini", "gpt-5-nano"])
+            api_key = st.text_input("OpenAI API key", value="", type="password")
+        else:
+            model = "fixture-grounded-search"
+            api_key = ""
 
-    if "tables" not in st.session_state or run_button:
-        try:
-            with st.spinner("Running query opportunity analysis..."):
-                st.session_state.tables = _run_analysis(
-                    targets,
-                    target_domain,
-                    provider_name,
-                    int(runs_count),
-                    model,
-                )
-                st.session_state.targets = targets
-                st.session_state.target_domain = target_domain
-                _append_log(f"Search fanout completed for {len(targets)} queries and {int(runs_count)} runs per query.")
-                if save_to_sqlite:
-                    st.session_state.last_batch_id = save_run_batch(
-                        db_path,
-                        query_set_name,
-                        target_domain,
-                        st.session_state.tables,
-                        targets,
-                        provider=provider_name,
-                        model=model,
-                        runs_per_query=int(runs_count),
-                    )
-                    st.session_state.db_path = db_path
-                    st.session_state.query_set_name = query_set_name
-        except Exception as exc:
-            _append_log(f"Analysis failed: {exc.__class__.__name__}: {exc}")
-            st.error(f"Analysis failed: {exc}")
+        runs_count = st.number_input("Runs per query", min_value=1, max_value=8, value=4)
+        concurrency = st.slider("Parallel API calls", min_value=1, max_value=8, value=4)
+        retries = st.number_input("Retries per failed run", min_value=0, max_value=3, value=1)
+        run_button = st.button("Run Fan-Out", type="primary", use_container_width=True)
+        with st.expander("Runtime Diagnostics", expanded=False):
+            diagnostics = _runtime_diagnostics()
+            st.caption(f"Python: `{diagnostics['python_executable']}`")
+            st.caption(f"Python version: `{diagnostics['python_version']}`")
+            st.caption(f"OpenAI: `{diagnostics['openai_version']}`")
+            st.caption(f"httpx: `{diagnostics['httpx_version']}`")
+            st.caption(f"google-genai: `{diagnostics['google_genai_version']}`")
+            st.caption(f"Streamlit: `{diagnostics['streamlit_version']}`")
+
+    st.title("AI Search Query Fan-Out")
+    st.caption("Run one query or a category batch, then inspect citations, fanout queries, answers, and brand mention coverage.")
+
+    try:
+        targets, input_df = _load_targets(
+            workflow=workflow,
+            query_text=query_text,
+            uploaded_file=uploaded_file,
+            default_target_domain=default_target_domain,
+            default_target_url=default_target_url,
+            default_url_pattern=default_url_pattern,
+            default_brand_aliases=default_brand_aliases,
+        )
+    except ValueError as exc:
+        st.error(str(exc))
+        st.stop()
+    _show_input_preview(input_df, targets)
+
+    if run_button:
+        missing_domain = [target.query for target in targets if not target.target_domain and not default_target_domain]
+        if missing_domain:
+            st.error("Every query needs a target domain. Add a default target domain or a `target_domain` column in the CSV.")
+            st.stop()
+        if not targets:
+            st.error("Add at least one query to run.")
             st.stop()
 
+        try:
+            provider = _make_provider(provider_name, model, api_key)
+            brand_aliases_df = _load_brand_aliases(brand_alias_file)
+        except Exception as exc:
+            st.error(str(exc))
+            st.stop()
+
+        progress = st.progress(0, text="Starting fan-out run...")
+        status = st.empty()
+
+        def on_progress(completed: int, total: int, result) -> None:
+            progress.progress(completed / total, text=f"Completed {completed} of {total} runs")
+            state = "failed" if result.error else "completed"
+            status.info(f"{state.title()}: {result.query} (run {result.run_index + 1})")
+
+        with st.spinner("Running grounded AI answers..."):
+            provider_results = run_queries(
+                targets,
+                provider,
+                int(runs_count),
+                max_workers=int(concurrency),
+                retries=int(retries),
+                on_progress=on_progress,
+            )
+            query_runs = build_query_runs(provider_results, targets, default_target_domain)
+            st.session_state.tables = build_tables(
+                targets,
+                query_runs,
+                default_target_domain,
+                brand_aliases=brand_aliases_df,
+            )
+            st.session_state.targets = targets
+            st.session_state.brand_aliases = brand_aliases_df
+            st.session_state.provider_name = provider_name
+            st.session_state.model = model
+
+        progress.empty()
+        status.empty()
+        st.success(f"Completed {len(targets)} queries x {int(runs_count)} runs.")
+
+    if "tables" not in st.session_state:
+        st.info("Configure a one-off query or upload a CSV batch, then run the fan-out analysis.")
+        return
+
     tables = st.session_state.tables
-    active_targets = st.session_state.get("targets", targets)
-    active_target = st.session_state.get("target_domain", target_domain)
-    brief = generate_brief(tables, active_target)
+    _render_summary_metrics(tables)
+    _render_tabs(tables)
 
-    overview_cols = st.columns(5)
-    overview_cols[0].metric("Queries", _metric_value(tables, "queries"))
-    overview_cols[1].metric("Avg Opportunity", _metric_value(tables, "avg_opportunity_score"))
-    overview_cols[2].metric("Approved Page Visibility", f"{_metric_value(tables, 'avg_acceptable_presence_rate')}%")
-    overview_cols[3].metric("Approved RRF Score", _metric_value(tables, "avg_acceptable_mrr"))
-    overview_cols[4].metric("Zero Visibility", _metric_value(tables, "zero_visibility_queries"))
 
-    tab_overview, tab_matrix, tab_detail, tab_diagnostics, tab_alignment, tab_daily, tab_trends, tab_history, tab_queue, tab_competitors, tab_brief = st.tabs(
-        [
-            "Overview",
-            "Query Matrix",
-            "Citation Detail",
-            "URL Diagnostics",
-            "Content Alignment",
-            "Daily Tracker",
-            "8-Week Trends",
-            "Historical Weekly Queue",
-            "Weekly Queue",
-            "Competitor Patterns",
-            "Opportunity Brief",
-        ]
+def _load_targets(
+    workflow: str,
+    query_text: str,
+    uploaded_file,
+    default_target_domain: str,
+    default_target_url: str,
+    default_url_pattern: str,
+    default_brand_aliases: str,
+):
+    if workflow == "CSV batch" and uploaded_file is not None:
+        df = pd.read_csv(uploaded_file, encoding="utf-8-sig").fillna("")
+    else:
+        df = pd.DataFrame(
+            [
+                {
+                    "query": query_text.strip(),
+                    "target_domain": default_target_domain,
+                    "target_url": default_target_url,
+                    "acceptable_url_pattern": default_url_pattern,
+                    "target_brand_aliases": default_brand_aliases,
+                }
+            ]
+        )
+    query_columns = [column for column in df.columns if _canonical_column_key(column) == "query"]
+    if query_columns:
+        df = df[df[query_columns[0]].astype(str).str.strip() != ""].reset_index(drop=True)
+    targets = query_targets_from_dataframe(
+        df,
+        default_target_domain=default_target_domain,
+        default_target_url=default_target_url,
+        default_acceptable_url_pattern=default_url_pattern,
+        default_brand_aliases=default_brand_aliases,
+    )
+    return targets, df
+
+
+def _load_brand_aliases(uploaded_file) -> pd.DataFrame:
+    if uploaded_file is None:
+        return pd.DataFrame(columns=["brand", "aliases", "category"])
+    df = pd.read_csv(uploaded_file).fillna("")
+    if "brand" not in df.columns:
+        raise ValueError("Brand aliases CSV needs a `brand` column.")
+    if "aliases" not in df.columns:
+        df["aliases"] = ""
+    if "category" not in df.columns:
+        df["category"] = ""
+    return df[["brand", "aliases", "category"]]
+
+
+def _show_input_preview(input_df: pd.DataFrame, targets) -> None:
+    with st.expander("Input Preview", expanded=False):
+        if input_df.empty:
+            st.caption("No queries loaded yet.")
+            return
+        preview = pd.DataFrame(
+            [
+                {
+                    "query": target.query,
+                    "target_domain": target.target_domain,
+                    "target_url": target.target_url,
+                    "acceptable_url_pattern": target.acceptable_url_pattern,
+                    "target_brand_aliases": target.target_brand_aliases,
+                }
+                for target in targets
+            ]
+        )
+        st.dataframe(_display(preview), hide_index=True, use_container_width=True)
+
+
+def _make_provider(provider_name: str, model: str, api_key: str):
+    if provider_name == "Fixture demo":
+        return FixtureProvider(FIXTURE_RUNS)
+    if provider_name == "Gemini live":
+        return GeminiGroundedSearchProvider(api_key=api_key or None, model=model)
+    return OpenAIWebSearchProvider(api_key=api_key or None, model=model)
+
+
+def _runtime_diagnostics() -> dict[str, str]:
+    return {
+        "python_executable": sys.executable,
+        "python_version": sys.version.split()[0],
+        "openai_version": _package_version("openai"),
+        "httpx_version": _package_version("httpx"),
+        "google_genai_version": _package_version("google-genai"),
+        "streamlit_version": _package_version("streamlit"),
+    }
+
+
+def _package_version(package_name: str) -> str:
+    try:
+        return importlib.metadata.version(package_name)
+    except importlib.metadata.PackageNotFoundError:
+        return "not installed"
+
+
+def _render_summary_metrics(tables: dict[str, pd.DataFrame]) -> None:
+    overview = tables["overview"].iloc[0].to_dict()
+    cols = st.columns(6)
+    cols[0].metric("Queries", overview.get("total_queries", 0))
+    cols[1].metric("Answers", overview.get("total_answers", 0))
+    cols[2].metric("Fan-Outs", overview.get("total_fanout_queries", 0))
+    cols[3].metric("Cited URLs", overview.get("total_cited_urls", 0))
+    cols[4].metric("Target Citations", overview.get("target_citation_answer_frequency", "0/0"))
+    cols[5].metric("Target Mentions", overview.get("target_mention_answer_frequency", "0/0"))
+    unresolved = tables.get("unresolved_redirects", pd.DataFrame())
+    if not unresolved.empty:
+        unresolved_count = int((unresolved.get("citation_kind", pd.Series(dtype=str)).astype(str) == "unresolved").sum())
+        fallback_count = int((unresolved.get("citation_kind", pd.Series(dtype=str)).astype(str) == "domain_fallback").sum())
+        st.caption(
+            f"{unresolved_count} unresolved redirect citation(s); "
+            f"{fallback_count} domain fallback citation(s) were kept in domain rankings only."
+        )
+
+
+def _render_tabs(tables: dict[str, pd.DataFrame]) -> None:
+    tab_summary, tab_brands, tab_urls, tab_matrix, tab_fanouts, tab_answers, tab_raw = st.tabs(
+        ["Summary", "Brand Mentions", "Cited URLs", "Query Matrix", "Fan-Outs", "AI Answers", "Raw Runs"]
     )
 
-    with tab_overview:
-        st.subheader("Query Bucket Summary")
-        st.dataframe(_display(tables["overview"]), hide_index=True, width="stretch")
-        st.subheader("Highest Opportunity Queries")
-        columns = [
-            "query",
-            "query_cluster",
-            "intent",
-            "target_mention_rate",
-            "approved_page_citation_rate",
-            "acceptable_target_presence_rate",
-            "acceptable_mrr",
+    with tab_summary:
+        st.subheader("Batch Summary")
+        summary_cols = [
+            "target_domain",
+            "total_queries",
+            "total_answers",
+            "successful_answers",
+            "run_errors",
+            "total_fanout_queries",
+            "total_cited_urls",
+            "unique_cited_urls",
+            "unique_cited_domains",
+            "unresolved_redirects",
+            "domain_fallback_citations",
+            "target_citation_query_coverage",
+            "target_citation_answer_frequency",
+            "target_mention_query_coverage",
+            "target_mention_answer_frequency",
+            "avg_domain_rrf_score",
             "top_competitor_domain",
-            "opportunity_score",
+            "top_brand",
+        ]
+        st.dataframe(_display(tables["overview"][[col for col in summary_cols if col in tables["overview"].columns]]), hide_index=True, use_container_width=True)
+        zip_bytes = _zip_outputs(tables)
+        download_col, save_col = st.columns(2)
+        with download_col:
+            st.download_button(
+                "Download tables ZIP",
+                data=zip_bytes,
+                file_name="seo_suite_fanout_tables.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+        with save_col:
+            if st.button("Save ZIP to Desktop", use_container_width=True):
+                try:
+                    saved_path = _save_zip_to_desktop(zip_bytes)
+                    st.success(f"Saved to {saved_path}")
+                except OSError as exc:
+                    st.error(f"Could not save ZIP to Desktop: {exc}")
+
+    with tab_brands:
+        st.subheader("Detected Brands in AI Answer Text")
+        brand_cols = [
+            "brand",
+            "is_target_brand",
+            "query_coverage",
+            "query_coverage_count",
+            "query_coverage_rate",
+            "answer_frequency",
+            "answer_frequency_count",
+            "answer_frequency_rate",
+            "evidence_runs",
+            "mentioned_queries",
+            "seed_sources",
+            "category",
         ]
         st.dataframe(
-            _style_display_opportunity(tables["query_metrics"][columns].head(10)),
+            _style_target(tables["brand_mentions"][[col for col in brand_cols if col in tables["brand_mentions"].columns]]),
             hide_index=True,
-            width="stretch",
+            use_container_width=True,
         )
-        st.subheader("Citation Matrix by Domain")
-        st.dataframe(make_citation_matrix(tables["citations"], "cited_domain"), hide_index=True, width="stretch")
+        st.subheader("Brand Evidence by Run")
+        evidence_cols = ["query", "run_index", "brand", "matched_alias", "evidence", "position"]
+        evidence = tables.get("brand_run_mentions", pd.DataFrame())
+        if evidence.empty:
+            st.info("No brand mentions were detected in the answer text.")
+        else:
+            st.dataframe(
+                _style_target(evidence[[col for col in evidence_cols if col in evidence.columns]]),
+                hide_index=True,
+                use_container_width=True,
+            )
 
-    with tab_matrix:
-        st.subheader("Mapped Query Performance")
-        matrix_cols = [
-            "query",
-            "query_cluster",
-            "intent",
-            "priority",
-            "target_url",
-            "acceptable_url_pattern",
-            "target_domain_presence_rate",
-            "exact_target_url_presence_rate",
-            "acceptable_target_presence_rate",
-            "target_mention_rate",
-            "domain_citation_rate",
-            "exact_url_citation_rate",
-            "approved_page_citation_rate",
-            "best_acceptable_position",
-            "acceptable_mrr",
-            "top_competitor_url",
-            "target_mismatch",
-            "opportunity_score",
+    with tab_urls:
+        st.subheader("Cited URLs")
+        url_cols = [
+            "cited_url",
+            "cited_domain",
+            "category",
+            "total_citations",
+            "query_coverage",
+            "query_coverage_rate",
+            "citation_kinds",
+            "title",
+            "queries_list",
         ]
-        st.dataframe(_style_display_opportunity(tables["query_metrics"][matrix_cols]), hide_index=True, width="stretch")
-
-    with tab_detail:
-        query_options = tables["query_metrics"]["query"].tolist()
-        selected_query = st.selectbox("Query", query_options)
-        st.subheader("Runs")
-        st.dataframe(_display(tables["runs"][tables["runs"]["query"] == selected_query]), hide_index=True, width="stretch")
-        st.subheader("Citations")
-        detail_cols = [
+        st.dataframe(
+            _style_target(tables["url_metrics"][[col for col in url_cols if col in tables["url_metrics"].columns]]),
+            hide_index=True,
+            use_container_width=True,
+        )
+        st.subheader("Cited Domains")
+        domain_cols = [
+            "cited_domain",
+            "category",
+            "total_citations",
+            "query_coverage",
+            "query_coverage_rate",
+            "citation_kinds",
+            "queries_list",
+        ]
+        st.dataframe(
+            _style_target(tables["domain_metrics"][[col for col in domain_cols if col in tables["domain_metrics"].columns]]),
+            hide_index=True,
+            use_container_width=True,
+        )
+        st.subheader("Citation Detail")
+        citation_cols = [
+            "query",
             "run_index",
             "citation_position",
             "cited_domain",
             "cited_url",
+            "original_url",
+            "resolution_status",
+            "resolution_method",
+            "source_label",
+            "fallback_domain",
+            "citation_kind",
+            "source_type",
+            "final_status_code",
             "is_target_domain",
             "is_exact_target_url",
             "is_acceptable_target_url",
             "title",
         ]
         st.dataframe(
-            _display(tables["citations"][tables["citations"]["query"] == selected_query][detail_cols]),
+            _style_target(tables["citations"][[col for col in citation_cols if col in tables["citations"].columns]]),
             hide_index=True,
-            width="stretch",
+            use_container_width=True,
         )
-        st.subheader("URL Comparison")
-        comparison_cols = [
-            "url_role",
-            "url",
-            "domain",
-            "diagnostic_flags",
-            "raw_render_delta_type",
-            "product_schema_raw",
-            "product_schema_rendered",
-            "offer_schema_raw",
-            "offer_schema_rendered",
-            "word_count_raw",
-            "word_count_rendered",
-            "internal_links_count",
-            "external_outlinks_count",
-            "lcp",
-            "inp",
-            "cls",
-            "pagespeed_performance_score",
-        ]
-        comparison = _comparison_for_query(tables, active_targets, selected_query)
-        if comparison.empty:
-            st.info("No URL comparison rows are available for this query. Run the analysis again after changing the uploaded query map.")
-        else:
-            st.dataframe(_display(comparison[[col for col in comparison_cols if col in comparison.columns]]), hide_index=True, width="stretch")
-        with st.expander("Answer Text"):
-            for row in tables["runs"][tables["runs"]["query"] == selected_query].to_dict("records"):
-                st.markdown(f"**Run {row['run_index']}**")
-                st.write(row["response_text"])
-
-    with tab_diagnostics:
-        st.subheader("URL Diagnostics")
-        st.caption("Run page diagnostics after search fanout. Select only the target and cited URLs you want to fetch, render, and analyze.")
-        diagnostic_candidates = collect_diagnostic_urls(active_targets, tables)
-        default_urls = []
-        metrics = tables.get("query_metrics", pd.DataFrame())
-        if not metrics.empty:
-            default_urls = (
-                metrics["target_url"].dropna().astype(str).head(3).tolist()
-                + metrics["top_competitor_url"].dropna().astype(str).replace("-", "").head(3).tolist()
-            )
-        selected_diagnostic_urls = st.multiselect(
-            "URLs to diagnose",
-            diagnostic_candidates,
-            default=[url for url in default_urls if url in diagnostic_candidates],
-        )
-        diagnostic_cols = st.columns(3)
-        fetch_live_diagnostics = diagnostic_cols[0].checkbox("Fetch raw HTML", value=True)
-        render_live_diagnostics = diagnostic_cols[1].checkbox("Render with Playwright", value=False)
-        include_pagespeed = diagnostic_cols[2].checkbox("Fetch PageSpeed metrics", value=False)
-        run_diagnostics = st.button("Run URL Diagnostics", type="secondary")
-        if run_diagnostics:
-            st.session_state.tables = _run_selected_diagnostics(
-                tables,
-                active_targets,
-                selected_diagnostic_urls,
-                fetch_live_pages=fetch_live_diagnostics,
-                render_live_pages=render_live_diagnostics,
-                pagespeed_api_key=pagespeed_api_key if include_pagespeed else "",
-            )
-            tables = st.session_state.tables
-            brief = generate_brief(tables, active_target)
-
-        diagnostic_cols = [
-            "url",
-            "domain",
-            "fetch_status",
-            "diagnostic_flags",
-            "raw_render_delta_type",
-            "product_schema_raw",
-            "product_schema_rendered",
-            "offer_schema_raw",
-            "offer_schema_rendered",
-            "title_changed",
-            "h1_changed",
-            "canonical_changed",
-            "internal_links_count",
-            "external_outlinks_count",
-            "word_count_raw",
-            "word_count_rendered",
-            "lcp",
-            "inp",
-            "cls",
-            "pagespeed_performance_score",
-            "field_data_available",
-        ]
-        diagnostics = tables["page_diagnostics"]
-        st.dataframe(_display(diagnostics[[col for col in diagnostic_cols if col in diagnostics.columns]]), hide_index=True, width="stretch")
-        diagnostic_errors = tables.get("diagnostic_errors", pd.DataFrame())
-        if not diagnostic_errors.empty:
-            with st.expander("Diagnostic Errors"):
-                st.dataframe(diagnostic_errors, hide_index=True, width="stretch")
-
-    with tab_alignment:
-        st.subheader("Content Alignment")
-        alignment = tables.get("content_alignment", pd.DataFrame())
-        if alignment.empty:
-            st.info("No content alignment rows are available yet.")
-        else:
-            selected_alignment_query = st.selectbox("Alignment Query", alignment["query"].drop_duplicates().tolist())
-            alignment_cols = [
+        unresolved = tables.get("unresolved_redirects", pd.DataFrame())
+        if not unresolved.empty:
+            st.subheader("Redirect Diagnostics")
+            unresolved_cols = [
                 "query",
-                "url_role",
-                "url",
-                "source_text_mode",
-                "tfidf_score",
-                "embedding_score",
-                "best_matching_heading",
-                "best_chunk_text",
-                "answer_capsule_present",
-                "alignment_gap_vs_top_competitor",
+                "run_index",
+                "citation_position",
+                "original_url",
+                "title",
+                "source_label",
+                "fallback_domain",
+                "citation_kind",
+                "resolution_status",
+                "resolution_method",
+                "resolution_error",
             ]
             st.dataframe(
-                _display(alignment[alignment["query"] == selected_alignment_query][alignment_cols]),
+                _display(unresolved[[col for col in unresolved_cols if col in unresolved.columns]]),
                 hide_index=True,
-                width="stretch",
+                use_container_width=True,
             )
 
-    with tab_daily:
-        st.subheader("Daily Tracker")
-        active_db_path = st.session_state.get("db_path", "data/seo_suite.db")
-        active_query_set = st.session_state.get("query_set_name", "Sample Ecommerce Query Set")
-        daily = build_daily_trends(active_db_path, active_query_set)
-        if daily.empty:
-            st.info("No saved SQLite batches yet. Enable 'Save run to SQLite' and run an analysis.")
-        else:
-            st.line_chart(daily.set_index("run_date")[["mention_rate", "approved_page_citation_rate", "approved_page_rrf_score"]])
-            st.dataframe(_display(daily), hide_index=True, width="stretch")
-
-    with tab_trends:
-        st.subheader("8-Week Trends")
-        active_db_path = st.session_state.get("db_path", "data/seo_suite.db")
-        active_query_set = st.session_state.get("query_set_name", "Sample Ecommerce Query Set")
-        weekly = build_weekly_rollups(active_db_path, active_query_set, weeks=8)
-        if weekly.empty:
-            st.info("No weekly rollups available yet.")
-        else:
-            st.line_chart(weekly.set_index("week_start")[["mention_rate", "approved_page_citation_rate", "approved_page_rrf_score"]])
-            st.dataframe(_display(weekly), hide_index=True, width="stretch")
-
-    with tab_history:
-        st.subheader("Historical Weekly Queue")
-        active_db_path = st.session_state.get("db_path", "data/seo_suite.db")
-        active_query_set = st.session_state.get("query_set_name", "Sample Ecommerce Query Set")
-        historical_queue = build_historical_queue(active_db_path, active_query_set)
-        if historical_queue.empty:
-            st.info("No saved historical queue items yet.")
-        else:
-            history_cols = [
-                "query",
-                "query_cluster",
-                "recommended_follow_up",
-                "issue_status",
-                "weekly_priority_score",
-                "diagnostic_flags",
-            ]
-            st.dataframe(
-                _style_display_opportunity(historical_queue[[col for col in history_cols if col in historical_queue.columns]], "weekly_priority_score"),
-                hide_index=True,
-                width="stretch",
-            )
-
-    with tab_queue:
-        st.subheader("Weekly Follow-Up Queue")
-        queue_cols = [
+    with tab_matrix:
+        st.subheader("Query Matrix")
+        matrix_cols = [
             "query",
             "query_cluster",
-            "recommended_follow_up",
-            "target_url",
+            "target_domain",
+            "runs_count",
+            "target_mention_rate",
+            "domain_citation_rate",
+            "inline_citation_rate",
+            "approved_page_citation_rate",
+            "domain_rrf_score",
+            "acceptable_rrf_score",
+            "total_citations",
+            "unique_cited_urls",
+            "fanout_query_count",
+            "top_competitor_domain",
             "top_competitor_url",
-            "approved_page_visibility",
-            "approved_page_position_score",
-            "wrong_client_page_cited",
+            "top_brands",
             "opportunity_score",
-            "diagnostic_flags",
-            "weekly_priority_score",
         ]
-        queue = tables["weekly_queue"]
-        st.dataframe(_style_display_opportunity(queue[[col for col in queue_cols if col in queue.columns]], "weekly_priority_score"), hide_index=True, width="stretch")
-
-    with tab_competitors:
-        st.subheader("Recurring Competitor Domains")
-        domain_df = tables["domain_metrics"]
-        st.dataframe(domain_df[domain_df["category"] != "Target"], hide_index=True, width="stretch")
-        st.subheader("Recurring Competitor URLs")
-        url_df = tables["url_metrics"]
-        st.dataframe(url_df[url_df["category"] != "Target"], hide_index=True, width="stretch")
-
-    with tab_brief:
-        st.subheader("Client-Ready Brief")
-        st.markdown(brief)
-        st.download_button(
-            "Download outputs ZIP",
-            data=_zip_outputs(tables, brief),
-            file_name="seo_suite_opportunity_matrix.zip",
-            mime="application/zip",
-            width="stretch",
+        st.dataframe(
+            _style_opportunity(tables["query_metrics"][[col for col in matrix_cols if col in tables["query_metrics"].columns]]),
+            hide_index=True,
+            use_container_width=True,
         )
 
-    with st.sidebar:
-        with st.expander("Run Log", expanded=False):
-            log_rows = st.session_state.get("run_log", [])
-            if log_rows:
-                for item in log_rows[-25:]:
-                    st.write(item)
-            else:
-                st.caption("No run events yet.")
-        run_errors = tables.get("run_errors", pd.DataFrame())
-        if not run_errors.empty:
-            with st.expander("Search Run Errors", expanded=True):
-                st.dataframe(run_errors, hide_index=True, width="stretch")
+    with tab_fanouts:
+        st.subheader("Provider-Native Fan-Out Queries")
+        if tables["fanouts"].empty:
+            st.info("No provider-native fanout queries were exposed for this run.")
+        else:
+            st.dataframe(_display(tables["fanouts"]), hide_index=True, use_container_width=True)
+
+    with tab_answers:
+        st.subheader("AI Answers")
+        answer_cols = [
+            "query",
+            "run_index",
+            "provider",
+            "model",
+            "citation_count",
+            "fanout_query_count",
+            "mentioned_brands",
+            "response_text",
+            "error",
+        ]
+        answers = tables["ai_answers"][[col for col in answer_cols if col in tables["ai_answers"].columns]]
+        query_options = sorted(tables["ai_answers"]["query"].dropna().unique())
+        if query_options:
+            selected_query = st.selectbox("Read answers for query", query_options)
+            for row in tables["ai_answers"][tables["ai_answers"]["query"] == selected_query].to_dict("records"):
+                with st.expander(f"Run {int(row['run_index']) + 1}", expanded=False):
+                    if row.get("error"):
+                        st.error(row["error"])
+                    st.write(row.get("response_text", ""))
+        st.subheader("Answer Table")
+        st.dataframe(_display(answers), hide_index=True, use_container_width=True)
+
+    with tab_raw:
+        st.subheader("Raw Runs")
+        st.dataframe(_display(tables["raw_runs"]), hide_index=True, use_container_width=True)
+        if not tables["run_errors"].empty:
+            st.subheader("Run Errors")
+            st.dataframe(_display(tables["run_errors"]), hide_index=True, use_container_width=True)
+
+
+def _display(df: pd.DataFrame) -> pd.DataFrame:
+    return df.copy().rename(columns=DISPLAY_LABELS)
+
+
+def _style_target(df: pd.DataFrame):
+    display_df = _display(df)
+
+    def highlight(row):
+        values = {str(value).lower() for value in row.values}
+        is_target = "target" in values or "true" in values
+        return ["background-color: #e8f5e9; color: #124116" if is_target else "" for _ in row]
+
+    return display_df.style.apply(highlight, axis=1)
+
+
+def _style_opportunity(df: pd.DataFrame):
+    display_df = _display(df)
+    score_col = DISPLAY_LABELS.get("opportunity_score", "opportunity_score")
+    if score_col not in display_df.columns:
+        return display_df
+
+    def color_score(value):
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            return ""
+        if score >= 75:
+            return "background-color: #fde2e1; color: #6f1d1b"
+        if score >= 50:
+            return "background-color: #fff4ce; color: #5c4400"
+        return "background-color: #e8f5e9; color: #124116"
+
+    return display_df.style.map(color_score, subset=[score_col])
+
+
+def _zip_outputs(tables: dict[str, pd.DataFrame]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, df in tables.items():
+            zf.writestr(f"{name}.csv", df.to_csv(index=False))
+    return buffer.getvalue()
+
+
+def _save_zip_to_desktop(zip_bytes: bytes, now: datetime | None = None, desktop: Path | None = None) -> Path:
+    timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    desktop_path = desktop or Path.home() / "Desktop"
+    desktop_path.mkdir(parents=True, exist_ok=True)
+    path = desktop_path / f"seo_suite_fanout_{timestamp}.zip"
+    counter = 2
+    while path.exists():
+        path = desktop_path / f"seo_suite_fanout_{timestamp}_{counter}.zip"
+        counter += 1
+    path.write_bytes(zip_bytes)
+    return path
 
 
 if __name__ == "__main__":
