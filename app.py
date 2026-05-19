@@ -117,6 +117,7 @@ def main() -> None:
     with st.sidebar:
         st.title("Botify Consulting | AEO Query Fan-out Tracker")
         st.caption("AI-search fan-out visibility for ecommerce queries.")
+        st.markdown("[Setup Instructions](https://docs.google.com/document/d/1DWpqOLEiehvI45LyrBZ4GTutZ39FUw1WCzHs6xtT6XY/edit?tab=t.0)")
 
         workflow = st.radio("Workflow", ["One-off query", "CSV batch"], horizontal=True)
         domain_label = "Target domain" if workflow == "One-off query" else "Default target domain"
