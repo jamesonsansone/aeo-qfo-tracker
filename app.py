@@ -85,7 +85,7 @@ DISPLAY_LABELS = {
 
 
 st.set_page_config(
-    page_title="Botify Consulting | AEO Query Fan-out Tracker",
+    page_title="AEO Query Fan-Out Tracker",
     page_icon="",
     layout="wide",
 )
@@ -115,22 +115,22 @@ def _check_environment() -> None:
 def main() -> None:
     _check_environment()
     with st.sidebar:
-        st.title("Botify Consulting | AEO Query Fan-out Tracker")
-        st.caption("AI-search fan-out visibility for ecommerce queries.")
-        st.markdown("[Setup Instructions](https://docs.google.com/document/d/1DWpqOLEiehvI45LyrBZ4GTutZ39FUw1WCzHs6xtT6XY/edit?tab=t.0)")
+        st.title("AEO Query Fan-Out Tracker")
+        st.caption("AI-search visibility for queries, brands, citations, and cited pages.")
+        st.caption("Use fixture demo without API keys, or add a provider key for live runs.")
 
         workflow = st.radio("Workflow", ["One-off query", "CSV batch"], horizontal=True)
         domain_label = "Target domain" if workflow == "One-off query" else "Default target domain"
         default_target_domain = st.text_input(
             domain_label,
-            value="us.puma.com",
+            value="example.com",
             help="Domain-only matching is enough. Any cited URL on this domain or its subdomains is flagged as a target citation.",
-            placeholder="us.puma.com",
+            placeholder="example.com",
         )
         default_brand_aliases = st.text_input(
             "Target brand aliases",
-            value="Puma, Puma Running",
-            help="Comma-separated names to count in answer text. Example: Puma, Puma Running.",
+            value="Example Brand, Example Product",
+            help="Comma-separated names to count in answer text. Example: Example Brand, Example Product.",
         )
         brand_alias_file = st.file_uploader(
             "Brand aliases CSV",
@@ -147,9 +147,9 @@ def main() -> None:
             default_url_pattern = st.text_input(
                 "Target URL pattern",
                 value="",
-                help="Optional glob or regex. Example: https://us.puma.com/us/en/mens/*",
+                help="Optional glob or regex. Example: https://example.com/category/*",
             )
-            st.caption("Leave these blank for domain-only analysis. A cited URL like `https://us.puma.com/us/en/mens/clothing` will match target domain `us.puma.com`.")
+            st.caption("Leave these blank for domain-only analysis. A cited URL like `https://example.com/category/product` will match target domain `example.com`.")
 
         query_text = ""
         uploaded_file = None
@@ -187,7 +187,7 @@ def main() -> None:
             st.caption(f"google-genai: `{diagnostics['google_genai_version']}`")
             st.caption(f"Streamlit: `{diagnostics['streamlit_version']}`")
 
-    st.title("Botify Consulting | AEO Query Fan-out Tracker")
+    st.title("AEO Query Fan-Out Tracker")
     st.caption("Run one query or a category batch, then inspect citations, fanout queries, answers, and brand mention coverage.")
 
     try:
@@ -405,6 +405,7 @@ def _render_tabs(tables: dict[str, pd.DataFrame]) -> None:
             "top_brand",
         ]
         st.dataframe(_display(tables["overview"][[col for col in summary_cols if col in tables["overview"].columns]]), hide_index=True, use_container_width=True)
+        _render_summary_charts(tables)
         zip_bytes = _zip_outputs(tables)
         download_col, save_col = st.columns(2)
         with download_col:
@@ -444,6 +445,7 @@ def _render_tabs(tables: dict[str, pd.DataFrame]) -> None:
             hide_index=True,
             use_container_width=True,
         )
+        _render_brand_chart(tables)
         st.subheader("Brand Evidence by Run")
         evidence_cols = ["query", "run_index", "brand", "matched_alias", "evidence", "position"]
         evidence = tables.get("brand_run_mentions", pd.DataFrame())
@@ -489,6 +491,7 @@ def _render_tabs(tables: dict[str, pd.DataFrame]) -> None:
             hide_index=True,
             use_container_width=True,
         )
+        _render_domain_chart(tables)
         st.subheader("Citation Detail")
         citation_cols = [
             "query",
@@ -562,6 +565,7 @@ def _render_tabs(tables: dict[str, pd.DataFrame]) -> None:
             hide_index=True,
             use_container_width=True,
         )
+        _render_query_matrix_charts(tables)
 
     with tab_fanouts:
         st.subheader("Provider-Native Fan-Out Queries")
@@ -605,6 +609,60 @@ def _render_tabs(tables: dict[str, pd.DataFrame]) -> None:
 
 def _display(df: pd.DataFrame) -> pd.DataFrame:
     return df.copy().rename(columns=DISPLAY_LABELS)
+
+
+def _render_summary_charts(tables: dict[str, pd.DataFrame]) -> None:
+    metrics = tables.get("query_metrics", pd.DataFrame())
+    if metrics.empty:
+        return
+    chart_cols = [
+        "target_mention_rate",
+        "domain_citation_rate",
+        "approved_page_citation_rate",
+    ]
+    available_cols = [col for col in chart_cols if col in metrics.columns]
+    if available_cols:
+        st.subheader("Visibility Rates by Query")
+        visibility = (
+            metrics[["query", *available_cols]]
+            .set_index("query")
+            .sort_values(available_cols[0], ascending=False)
+        )
+        st.bar_chart(_display(visibility), use_container_width=True)
+
+
+def _render_brand_chart(tables: dict[str, pd.DataFrame]) -> None:
+    brands = tables.get("brand_mentions", pd.DataFrame())
+    if brands.empty or "answer_frequency_count" not in brands.columns:
+        return
+    chart = (
+        brands.loc[brands["answer_frequency_count"] > 0, ["brand", "answer_frequency_count"]]
+        .head(12)
+        .set_index("brand")
+    )
+    if not chart.empty:
+        st.subheader("Top Mentioned Brands")
+        st.bar_chart(_display(chart), use_container_width=True)
+
+
+def _render_domain_chart(tables: dict[str, pd.DataFrame]) -> None:
+    domains = tables.get("domain_metrics", pd.DataFrame())
+    if domains.empty or "total_citations" not in domains.columns:
+        return
+    chart = domains[["cited_domain", "total_citations"]].head(12).set_index("cited_domain")
+    if not chart.empty:
+        st.subheader("Top Cited Domains")
+        st.bar_chart(_display(chart), use_container_width=True)
+
+
+def _render_query_matrix_charts(tables: dict[str, pd.DataFrame]) -> None:
+    metrics = tables.get("query_metrics", pd.DataFrame())
+    if metrics.empty or "opportunity_score" not in metrics.columns:
+        return
+    chart = metrics[["query", "opportunity_score"]].head(12).set_index("query")
+    if not chart.empty:
+        st.subheader("Highest Opportunity Queries")
+        st.bar_chart(_display(chart), use_container_width=True)
 
 
 def _style_target(df: pd.DataFrame):

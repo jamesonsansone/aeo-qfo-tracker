@@ -141,7 +141,8 @@ class OpenAIWebSearchProvider:
                 import openai as _oai
                 import httpx as _httpx
                 raise RuntimeError(
-                    f"OpenAI client failed to initialize (openai {_oai.__version__} + "
+                    f"OpenAI client failed to initialize due to an incompatible openai/httpx package "
+                    f"pair (openai {_oai.__version__} + "
                     f"httpx {_httpx.__version__} are incompatible). "
                     f"Active Python: {sys.executable}. "
                     "Run the app with: python -m streamlit run app.py"
@@ -220,11 +221,11 @@ def _extract_openai_fanout_queries(response) -> list[str]:
     queries: list[str] = []
     seen = set()
     for action in _extract_openai_actions(response):
-        for key in ("query", "search_query", "searchQuery"):
-            value = action.get(key)
-            if isinstance(value, str) and value and value not in seen:
-                queries.append(value)
-                seen.add(value)
+        for key in ("queries", "query", "search_query", "searchQuery"):
+            for value in _as_list(action.get(key)):
+                if isinstance(value, str) and value and value not in seen:
+                    queries.append(value)
+                    seen.add(value)
     return queries
 
 
@@ -241,7 +242,7 @@ def _extract_gemini_sources(response) -> list[dict]:
     sources: list[dict] = []
     seen = set()
     for metadata in _iter_gemini_grounding_metadata(response):
-        for chunk in _as_list(_get_value(metadata, "grounding_chunks")):
+        for chunk in _as_list(_get_any_value(metadata, "grounding_chunks", "groundingChunks")):
             web = _get_value(chunk, "web")
             if not web:
                 continue
@@ -260,7 +261,7 @@ def _extract_gemini_fanout_queries(response) -> list[str]:
     queries: list[str] = []
     seen = set()
     for metadata in _iter_gemini_grounding_metadata(response):
-        for key in ("web_search_queries", "retrieval_queries"):
+        for key in ("web_search_queries", "webSearchQueries", "retrieval_queries", "retrievalQueries"):
             for value in _as_list(_get_value(metadata, key)):
                 if isinstance(value, str) and value and value not in seen:
                     queries.append(value)
@@ -277,7 +278,7 @@ def _extract_gemini_grounding_metadata(response) -> dict:
 
 def _iter_gemini_grounding_metadata(response):
     for candidate in _as_list(_get_value(response, "candidates")):
-        metadata = _get_value(candidate, "grounding_metadata")
+        metadata = _get_any_value(candidate, "grounding_metadata", "groundingMetadata")
         if metadata:
             yield metadata
 
@@ -534,6 +535,14 @@ def _get_value(value: Any, key: str):
     if isinstance(value, dict):
         return value.get(key)
     return getattr(value, key, None)
+
+
+def _get_any_value(value: Any, *keys: str):
+    for key in keys:
+        found = _get_value(value, key)
+        if found is not None:
+            return found
+    return None
 
 
 def _as_list(value) -> list:

@@ -332,10 +332,9 @@ def test_openai_provider_explains_proxies_package_mismatch(monkeypatch):
             raise TypeError("__init__() got an unexpected keyword argument 'proxies'")
 
     monkeypatch.setattr(openai, "OpenAI", BrokenOpenAI)
-    provider = OpenAIWebSearchProvider(api_key="test", model="gpt-5-nano")
 
     with pytest.raises(RuntimeError, match="incompatible openai/httpx package"):
-        provider.run_query(QueryTarget(query="best soccer cleats"), 0)
+        OpenAIWebSearchProvider(api_key="test", model="gpt-5-nano")
 
 
 def test_openai_parser_extracts_search_queries_and_sources():
@@ -343,7 +342,7 @@ def test_openai_parser_extracts_search_queries_and_sources():
         "output": [
             {
                 "action": {
-                    "query": "best running shoes 2026",
+                    "queries": ["best running shoes 2026", "running shoe reviews"],
                     "sources": [{"url": "https://example.com/a", "title": "A"}],
                 }
             },
@@ -360,7 +359,7 @@ def test_openai_parser_extracts_search_queries_and_sources():
         ]
     }
 
-    assert _extract_openai_fanout_queries(response) == ["best running shoes 2026"]
+    assert _extract_openai_fanout_queries(response) == ["best running shoes 2026", "running shoe reviews"]
     sources = _extract_openai_sources(response)
 
     assert [(source["url"], source["title"], source["resolution_status"]) for source in sources] == [
@@ -373,9 +372,9 @@ def test_gemini_parser_extracts_grounding_queries_and_chunks():
     response = {
         "candidates": [
             {
-                "grounding_metadata": {
-                    "web_search_queries": ["running shoe reviews"],
-                    "grounding_chunks": [
+                "groundingMetadata": {
+                    "webSearchQueries": ["running shoe reviews"],
+                    "groundingChunks": [
                         {"web": {"uri": "https://example.com/review", "title": "Review"}}
                     ],
                 }
